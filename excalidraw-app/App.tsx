@@ -202,7 +202,7 @@ const shareableLinkConfirmDialog = {
   description: (
     <Trans
       i18nKey="overwriteConfirm.modal.shareableLink.description"
-      bold={(text) => <strong>{text}</strong>}
+      bold={(text: any) => <strong>{text}</strong>}
       br={() => <br />}
     />
   ),
@@ -402,6 +402,8 @@ const ExcalidrawWrapper = () => {
   const [excalidrawAPI, excalidrawRefCallback] =
     useCallbackRefState<ExcalidrawImperativeAPI>();
 
+  const brushPreviewRef = useRef<HTMLDivElement>(null);
+
   const [, setShareDialogState] = useAtom(shareDialogStateAtom);
   const [collabAPI] = useAtom(collabAPIAtom);
   const [isCollaborating] = useAtomWithInitialValue(isCollaboratingAtom, () => {
@@ -434,6 +436,339 @@ const ExcalidrawWrapper = () => {
   }, [excalidrawAPI]);
 
   useEffect(() => {
+    if (!excalidrawAPI) {
+      return;
+    }
+
+    let isSpacePressed = false;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      if (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable ||
+        document.activeElement?.tagName === "INPUT" ||
+        document.activeElement?.tagName === "TEXTAREA"
+      ) {
+        return;
+      }
+
+      if (event.code === "Space") {
+        isSpacePressed = true;
+      }
+
+      // Map 'p' -> disable (or do nothing) to override default
+      if (event.key.toLowerCase() === "p") {
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        event.preventDefault();
+      }
+
+      // Map 'b' -> freedraw
+      if (event.key.toLowerCase() === "b") {
+        const currentActiveTool = excalidrawAPI.getAppState().activeTool;
+        excalidrawAPI.updateScene({
+          appState: {
+            activeTool: { ...currentActiveTool, type: "freedraw" as any },
+          },
+        });
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        event.preventDefault();
+      }
+    };
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.code === "Space") {
+        isSpacePressed = false;
+      }
+    };
+
+    const handleBlur = () => {
+      isSpacePressed = false;
+    };
+
+    let isZooming = false;
+    let startX = 0;
+
+    // Captured initial state for Zoom
+    let initialZoom = 1;
+    let initialScrollX = 0;
+    let initialScrollY = 0;
+
+    // The fixed point on screen (the mouse position where we clicked)
+    let fixedPointX = 0;
+    let fixedPointY = 0;
+
+    // Brush Adjustment State
+    let isBrushAdjusting = false;
+    let brushStartX = 0;
+    let brushStartY = 0;
+    let initialOpacity = 100;
+    let initialStrokeWidth = 1;
+    let brushAdjustMode: "none" | "size" | "opacity" = "none";
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement;
+      // Ensure we are interacting with the canvas and not UI elements
+      if (target.tagName !== "CANVAS") {
+        return;
+      }
+
+      // Brush Adjustment: Alt + Right Click
+      if (
+        event.altKey &&
+        event.button === 2 &&
+        !isBrushAdjusting &&
+        !isZooming
+      ) {
+        isBrushAdjusting = true;
+        brushStartX = event.clientX;
+        brushStartY = event.clientY;
+
+        const appState = excalidrawAPI.getAppState();
+        initialOpacity = appState.currentItemOpacity;
+        initialStrokeWidth = appState.currentItemStrokeWidth;
+
+        // Prevent default browser actions (context menu) and stop propagation
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+
+        document.body.style.setProperty("cursor", "crosshair", "important");
+        return;
+      }
+
+      if (event.ctrlKey && isSpacePressed && event.button === 0 && !isZooming) {
+        isZooming = true;
+        startX = event.clientX;
+
+        const appState = excalidrawAPI.getAppState();
+        initialZoom = appState.zoom.value;
+        initialScrollX = appState.scrollX;
+        initialScrollY = appState.scrollY;
+
+        fixedPointX = event.clientX;
+        fixedPointY = event.clientY;
+
+        // Prevent default browser actions and stop propagation to Excalidraw
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+
+        document.body.style.setProperty("cursor", "zoom-in", "important");
+      }
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (isBrushAdjusting) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+
+        const deltaX = event.clientX - brushStartX;
+        const deltaY = event.clientY - brushStartY;
+
+        // Mode locking: Only take one action at a time
+        const threshold = 5;
+        if (brushAdjustMode === "none") {
+          if (
+            Math.abs(deltaX) > threshold &&
+            Math.abs(deltaX) > Math.abs(deltaY)
+          ) {
+            brushAdjustMode = "size";
+          } else if (
+            Math.abs(deltaY) > threshold &&
+            Math.abs(deltaY) > Math.abs(deltaX)
+          ) {
+            brushAdjustMode = "opacity";
+          }
+        }
+
+        const appState = excalidrawAPI.getAppState();
+        let newWidth = appState.currentItemStrokeWidth;
+        let newOpacity = appState.currentItemOpacity;
+
+        if (brushAdjustMode === "size") {
+          // Horizontal -> Size (0.1px to 20px)
+          // Use logarithmic adjustment for better control at small sizes
+          // newWidth = initialWidth * e^(delta * k)
+          const sensitivity = 0.005;
+          const adjustedDeltaX = deltaX - (deltaX > 0 ? threshold : -threshold);
+          newWidth =
+            initialStrokeWidth * Math.exp(adjustedDeltaX * sensitivity);
+          newWidth = Math.max(0.1, Math.min(20, newWidth));
+        } else if (brushAdjustMode === "opacity") {
+          // Vertical -> Opacity
+          const adjustedDeltaY = deltaY - (deltaY > 0 ? threshold : -threshold);
+          newOpacity = initialOpacity - adjustedDeltaY;
+          newOpacity = Math.max(0, Math.min(100, newOpacity));
+        }
+
+        if (brushAdjustMode !== "none") {
+          excalidrawAPI.updateScene({
+            appState: {
+              currentItemStrokeWidth: newWidth,
+              currentItemOpacity: newOpacity,
+            },
+          });
+        }
+
+        // Update Brush Preview HUD
+        if (brushPreviewRef.current) {
+          const preview = brushPreviewRef.current;
+          preview.style.display = "flex";
+          preview.style.left = `${event.clientX + 20}px`;
+          preview.style.top = `${event.clientY + 20}px`;
+
+          const textContainer = preview.querySelector(
+            ".brush-text",
+          ) as HTMLElement;
+          if (textContainer) {
+            // Format exactly like the screenshot provided
+            textContainer.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; gap: 10px; color: ${
+                      brushAdjustMode === "size" ? "#ff4d4d" : "white"
+                    }">
+                        <span>Diameter:</span> <span>${newWidth.toFixed(
+                          2,
+                        )}px</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; gap: 10px; opacity: 0.5;">
+                        <span>Hardness:</span> <span>0%</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; gap: 10px; color: ${
+                      brushAdjustMode === "opacity" ? "#ff4d4d" : "white"
+                    }">
+                        <span>Opacity:</span> <span>${Math.round(
+                          newOpacity,
+                        )}%</span>
+                    </div>
+                 `;
+          }
+
+          const circle = preview.querySelector(".brush-circle") as HTMLElement;
+          if (circle) {
+            // Use the red color from the screenshot for the preview circle if it's being adjusted
+            const previewColor = "#ff0000";
+            const visualSize = Math.max(2, newWidth * 2);
+            circle.style.width = `${visualSize}px`;
+            circle.style.height = `${visualSize}px`;
+            circle.style.backgroundColor = previewColor;
+            circle.style.opacity = `${newOpacity / 100}`;
+            circle.style.borderRadius = "50%";
+            circle.style.border = "1.5px solid #000";
+            circle.style.boxShadow = "0 0 0 1px #fff"; // Double border effect
+            circle.style.display = "block";
+          }
+        }
+        return;
+      }
+
+      if (!isZooming) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+
+      const deltaX = event.clientX - startX;
+      // Sensitivity factor
+      const sensitivity = 0.005;
+
+      // Calculate zoom factor
+      // Moving right zooms in, left zooms out
+      const zoomChange = deltaX * sensitivity;
+
+      let nextZoom = initialZoom * (1 + zoomChange);
+
+      // Clamp zoom (Excalidraw limits are typically 0.1 to 30)
+      if (nextZoom < 0.1) {
+        nextZoom = 0.1;
+      }
+      if (nextZoom > 30) {
+        nextZoom = 30;
+      }
+
+      // Calculate new scroll to keep fixedPointX/Y stationary in scene
+      // newScrollX = initialScrollX + fixedPointX * (1/nextZoom - 1/initialZoom)
+      const nextScrollX =
+        initialScrollX + fixedPointX * (1 / nextZoom - 1 / initialZoom);
+      const nextScrollY =
+        initialScrollY + fixedPointY * (1 / nextZoom - 1 / initialZoom);
+
+      excalidrawAPI.updateScene({
+        appState: {
+          zoom: { value: nextZoom as any },
+          scrollX: nextScrollX,
+          scrollY: nextScrollY,
+        },
+      });
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      if (isBrushAdjusting) {
+        isBrushAdjusting = false;
+        brushAdjustMode = "none";
+        if (brushPreviewRef.current) {
+          brushPreviewRef.current.style.display = "none";
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        document.body.style.cursor = "";
+      }
+
+      if (isZooming) {
+        isZooming = false;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        document.body.style.cursor = "";
+      }
+    };
+
+    const handleContextMenu = (event: MouseEvent) => {
+      if (event.altKey) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+
+    window.addEventListener("contextmenu", handleContextMenu);
+    window.addEventListener("keydown", handleKeyDown, { capture: true }); // Capture to intercept 'p'/'b'
+    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", handleBlur);
+
+    // Use capture to intervene before Excalidraw
+    window.addEventListener("pointerdown", handlePointerDown, {
+      capture: true,
+    });
+    window.addEventListener("pointermove", handlePointerMove, {
+      capture: true,
+    });
+    window.addEventListener("pointerup", handlePointerUp, { capture: true });
+
+    return () => {
+      window.removeEventListener("contextmenu", handleContextMenu);
+      window.removeEventListener("keydown", handleKeyDown, { capture: true });
+      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("pointerdown", handlePointerDown, {
+        capture: true,
+      });
+      window.removeEventListener("pointermove", handlePointerMove, {
+        capture: true,
+      });
+      window.removeEventListener("pointerup", handlePointerUp, {
+        capture: true,
+      });
+    };
+  }, [excalidrawAPI]);
+
+  useEffect(() => {
     if (!excalidrawAPI || (!isCollabDisabled && !collabAPI)) {
       return;
     }
@@ -463,7 +798,7 @@ const ExcalidrawWrapper = () => {
         }
       } else {
         const fileIds =
-          data.scene.elements?.reduce((acc, element) => {
+          data.scene.elements?.reduce((acc: any, element: any) => {
             if (isInitializedImageElement(element)) {
               return acc.concat(element.fileId);
             }
@@ -568,7 +903,7 @@ const ExcalidrawWrapper = () => {
           const elements = excalidrawAPI.getSceneElementsIncludingDeleted();
           const currFiles = excalidrawAPI.getFiles();
           const fileIds =
-            elements?.reduce((acc, element) => {
+            elements?.reduce((acc: any, element: any) => {
               if (
                 isInitializedImageElement(element) &&
                 // only load and update images that aren't already loaded
@@ -673,7 +1008,7 @@ const ExcalidrawWrapper = () => {
 
           const elements = excalidrawAPI
             .getSceneElementsIncludingDeleted()
-            .map((element) => {
+            .map((element: any) => {
               if (
                 LocalData.fileStorage.shouldUpdateImageElementStatus(element)
               ) {
@@ -850,7 +1185,7 @@ const ExcalidrawWrapper = () => {
             export: {
               onExportToBackend,
               renderCustomUI: excalidrawAPI
-                ? (elements, appState, files) => {
+                ? (elements: any, appState: any, files: any) => {
                     return (
                       <ExportToExcalidrawPlus
                         elements={elements}
@@ -882,7 +1217,7 @@ const ExcalidrawWrapper = () => {
         handleKeyboardGlobally={true}
         autoFocus={true}
         theme={editorTheme}
-        renderTopRightUI={(isMobile) => {
+        renderTopRightUI={(isMobile: boolean) => {
           if (isMobile || !collabAPI || isCollabDisabled) {
             return null;
           }
@@ -906,7 +1241,7 @@ const ExcalidrawWrapper = () => {
             </div>
           );
         }}
-        onLinkOpen={(element, event) => {
+        onLinkOpen={(element: any, event: any) => {
           if (element.link && isElementLink(element.link)) {
             event.preventDefault();
             excalidrawAPI?.scrollToContent(element.link, { animate: true });
@@ -1191,6 +1526,57 @@ const ExcalidrawWrapper = () => {
             ref={debugCanvasRef}
           />
         )}
+
+        {/* Brush Preview HUD */}
+        <div
+          ref={brushPreviewRef}
+          style={{
+            position: "fixed",
+            display: "none",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: "12px",
+            backgroundColor: "rgba(30, 30, 30, 0.95)",
+            color: "white",
+            padding: "12px 16px",
+            borderRadius: "8px",
+            pointerEvents: "none",
+            fontFamily:
+              "'Annie Use Your Telescope', Assistant, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+            fontSize: "16px",
+            backdropFilter: "blur(8px)",
+            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+            border: "1px solid rgba(255,255,255,0.1)",
+          }}
+        >
+          <div
+            className="brush-text"
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "4px",
+              minWidth: "140px",
+            }}
+          >
+            {/* Text inserted via logic */}
+          </div>
+          <div
+            className="brush-circle-container"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: "60px",
+              height: "60px",
+              backgroundColor: "rgba(255,255,255,0.05)",
+              borderRadius: "4px",
+            }}
+          >
+            <div className="brush-circle" style={{ flexShrink: 0 }}>
+              {/* Circle inserted via logic */}
+            </div>
+          </div>
+        </div>
       </Excalidraw>
     </div>
   );

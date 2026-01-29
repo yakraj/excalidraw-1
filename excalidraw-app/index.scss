@@ -1,5 +1,17 @@
 @import "../packages/excalidraw/css/variables.module.scss";
 
+@font-face {
+  font-family: "Annie Use Your Telescope";
+  src: url("./fonts/AnnieUseYourTelescope-Regular.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+}
+
+:root {
+  --ui-font: "Assistant", "Annie Use Your Telescope", -apple-system,
+    BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
 .excalidraw {
   --color-primary-contrast-offset: #625ee0; // to offset Chubb illusion
 
