@@ -66,5 +66,13 @@
     }
   ],
   "outputDirectory": "excalidraw-app/build",
-  "installCommand": "yarn install"
+  "installCommand": "yarn install",
+  "buildCommand": "yarn build",
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD . excalidraw-app packages",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
 }
