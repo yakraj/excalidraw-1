@@ -71,7 +71,11 @@
   "ignoreCommand": "git diff --quiet HEAD^ HEAD . excalidraw-app packages",
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/app/(.*)",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/app",
       "destination": "/index.html"
     }
   ]
